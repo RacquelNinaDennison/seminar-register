@@ -245,9 +245,9 @@ function getSignUrl() {
 function renderQR() {
   const el = document.getElementById('qrcode');
   el.innerHTML = '';
-  new QRCode(el, { text: getSignUrl(), width: 400, height: 900, correctLevel: QRCode.CorrectLevel.H });
+  new QRCode(el, { text: getSignUrl(), width: 600, height: 600, correctLevel: QRCode.CorrectLevel.H });
 
-  const pad = 24, size = 400;
+  const pad = 24, size = 300;
   const svg = document.getElementById('qrRingSvg');
   svg.style.width = svg.style.height = (size + pad) + 'px';
   const r  = (size / 2) + (pad / 2) - 3;
@@ -813,21 +813,19 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>
 
       <div class="active-grid">
-        <!-- QR card -->
-        <div class="card">
-          <h2>📱 QR Code — Show to class</h2>
-          <div class="qr-wrapper">
-            <div class="qr-ring-container">
-              <div id="qrcode"></div>
-              <svg class="qr-ring-svg" id="qrRingSvg">
-                <circle class="qr-ring-bg" id="qrRingBg" />
-                <circle class="qr-ring-progress" id="qrRingProgress" />
-              </svg>
-            </div>
-            <div class="qr-refresh-label">🔄 Refreshes in <span id="rotCountdown">--</span>s</div>
-          </div>
-        </div>
+<div class="card">
+  <h2>📱 QR Code — Show to class</h2>
+  <div class="qr-wrapper" style="flex-direction:row; align-items:center; justify-content:center; gap:2rem;">
 
+    <!-- QR code, no ring overlaid -->
+    <div id="qrcode"></div>
+
+    <!-- Timer sidebar -->
+    <div style="display:flex; flex-direction:column; align-items:center; gap:1rem;">
+
+    </div>
+  </div>
+</div>
         <!-- Stats -->
         <div>
           <div class="stats-row">
