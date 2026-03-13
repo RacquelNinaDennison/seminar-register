@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CS Seminar Attendance</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, addDoc, getDocs, query, where }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ╔══════════════════════════════════════════════════╗
+// ║  PASTE YOUR FIREBASE CONFIG HERE                 ║
+// ╚══════════════════════════════════════════════════╝
+const firebaseConfig = {
+  apiKey: "AIzaSyDk1ypdyZgfa3iTaURVn509RnJkZ-mNlSo",
+  authDomain: "ta-register.firebaseapp.com",
+  projectId: "ta-register",
+  storageBucket: "ta-register.firebasestorage.app",
+  messagingSenderId: "438930123751",
+  appId: "1:438930123751:web:d7a98ff74db953c3b1ab42",
+  measurementId: "G-QLQRYLZEV7"
+};
+// ╔══════════════════════════════════════════════════╗
+// ║  TA PASSWORD — change this to whatever you want  ║
+// ╚══════════════════════════════════════════════════╝
+const TA_PASSWORD = "seminar2026";
+
+// ╔══════════════════════════════════════════════════╗
+// ║  SEMINAR SCHEDULE (24h, Africa/Johannesburg)     ║
+// ╚══════════════════════════════════════════════════╝
+const OPEN_H  = 12, OPEN_M  = 45;
+const CLOSE_H = 15, CLOSE_M =  0;
+const QR_ROTATION_SECS = 60;
+
+// ────────────────────────────────────────────────────
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ── STATE ────────────────────────────────────────────
+let currentSession   = null;   // { id, token, tokenIssuedAt, date, open, close }
+let unsubscribe      = null;   // Firestore live listener
+let taTimerInt       = null;
+let qrRotateInt      = null;
+let qrCountInt       = null;
+let studentTimerInt  = null;
+let tokenCountInt    = null;
+let qrSecsLeft       = QR_ROTATION_SECS;
+let sigPainting      = false;
+let sigCanvas, sigCtx;
+
+const TOKEN_GRACE_MS = 6000;
+
+// ── HELPERS ──────────────────────────────────────────
+function nowSAST() {
+  // Returns a Date object representing current time in Africa/Johannesburg
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Johannesburg" }));
+}
+
+function isSeminarWindow() {
+  const now = nowSAST();
+  const day = now.getDay(); // 0=Sun, 4=Thu
+  const h = now.getHours(), m = now.getMinutes();
+  const afterOpen  = h > OPEN_H  || (h === OPEN_H  && m >= OPEN_M);
+  const beforeClose= h < CLOSE_H || (h === CLOSE_H && m <  CLOSE_M);
+  return day === 5 && afterOpen && beforeClose;
+}
+
+function todayDateStr() {
+  const d = nowSAST();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function generateToken() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function clearAllIntervals() {
+  [taTimerInt, qrRotateInt, qrCountInt, studentTimerInt, tokenCountInt].forEach(clearInterval);
+  if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+}
+
+// ── BOOT ─────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  initCanvas();
+  const params = new URLSearchParams(window.location.search);
+
+  if (params.get('sign') === '1') {
+    // Student signing flow
+    showPage('page-student');
+    loadStudentPage(params);
+  } else {
+    // Determine what to show
+    if (isSeminarWindow()) {
+      showPage('page-ta-login');
+    } else {
+      showClosedPage();
+    }
+    // Poll every 30s in case window opens while page is loaded
+    setInterval(() => {
+      const activePage = document.querySelector('.page.active')?.id;
+      if (activePage === 'page-closed' && isSeminarWindow()) {
+        showPage('page-ta-login');
+      }
+    }, 30000);
+  }
+});
+
+// ── CLOSED PAGE ──────────────────────────────────────
+function showClosedPage() {
+  const now  = nowSAST();
+  const day  = now.getDay();
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  document.getElementById('closedDay').textContent  = days[day];
+  document.getElementById('closedTime').textContent = now.toLocaleTimeString('en-ZA', {hour:'2-digit',minute:'2-digit'});
+
+  // Countdown to next Thursday 12:45
+  const msUntil = msUntilNextThursday();
+  if (msUntil !== null) {
+    const h = Math.floor(msUntil / 3600000);
+    const m = Math.floor((msUntil % 3600000) / 60000);
+    document.getElementById('nextOpen').textContent = `Opens in ${h}h ${m}m (next Thursday 12:45)`;
+  }
+  showPage('page-closed');
+}
+
+function msUntilNextThursday() {
+  const now  = nowSAST();
+  const day  = now.getDay();
+  const daysUntilThur = (4 - day + 7) % 7 || 7;
+  const next = new Date(now);
+  next.setDate(now.getDate() + daysUntilThur);
+  next.setHours(OPEN_H, OPEN_M, 0, 0);
+  return next - now;
+}
+
+// ── TA LOGIN ─────────────────────────────────────────
+window.taLogin = function() {
+  const pw = document.getElementById('taPassword').value;
+  if (pw === TA_PASSWORD) {
+    document.getElementById('loginError').classList.add('hidden');
+    showPage('page-ta');
+    initTADashboard();
+  } else {
+    document.getElementById('loginError').classList.remove('hidden');
+    document.getElementById('taPassword').value = '';
+  }
+};
+
+window.taLogout = function() {
+  clearAllIntervals();
+  currentSession = null;
+  document.getElementById('ta-active-panel').classList.add('hidden');
+  document.getElementById('ta-setup-panel').classList.remove('hidden');
+  showPage('page-ta-login');
+};
+
+// ── TA DASHBOARD ─────────────────────────────────────
+async function initTADashboard() {
+  // Check if a session already exists for today
+  const date = todayDateStr();
+  const sessionRef = doc(db, 'sessions', date);
+  const snap = await getDoc(sessionRef);
+
+  if (snap.exists()) {
+    currentSession = snap.data();
+    // Rotate token immediately (invalidate any screenshots from before)
+    currentSession.token         = generateToken();
+    currentSession.tokenIssuedAt = Date.now();
+    await setDoc(sessionRef, currentSession, { merge: true });
+    document.getElementById('ta-setup-panel').classList.add('hidden');
+    document.getElementById('ta-active-panel').classList.remove('hidden');
+    renderTADashboard();
+    subscribeToAttendance(date);
+    startTATimers();
+  } else {
+    document.getElementById('ta-setup-panel').classList.remove('hidden');
+    document.getElementById('ta-active-panel').classList.add('hidden');
+    document.getElementById('setupDate').textContent = date;
+  }
+}
+
+window.startSession = async function() {
+  const course  = document.getElementById('courseName').value.trim();
+  const rawList = document.getElementById('classListText').value.trim();
+  if (!course) { alert('Please enter a course name.'); return; }
+
+  const date   = todayDateStr();
+  const openStr  = `${date}T${String(OPEN_H).padStart(2,'0')}:${String(OPEN_M).padStart(2,'0')}:00`;
+  const closeStr = `${date}T${String(CLOSE_H).padStart(2,'0')}:${String(CLOSE_M).padStart(2,'0')}:00`;
+
+  const classList = rawList
+    ? rawList.split(/[\n,;]+/).map(s => s.trim().toUpperCase()).filter(Boolean)
+    : [];
+
+  currentSession = {
+    id:            date,
+    course,
+    date,
+    open:          openStr,
+    close:         closeStr,
+    classList,
+    token:         generateToken(),
+    tokenIssuedAt: Date.now(),
+    created:       new Date().toISOString()
+  };
+
+  await setDoc(doc(db, 'sessions', date), currentSession);
+
+  document.getElementById('ta-setup-panel').classList.add('hidden');
+  document.getElementById('ta-active-panel').classList.remove('hidden');
+  renderTADashboard();
+  subscribeToAttendance(date);
+  startTATimers();
+};
+
+function renderTADashboard() {
+  document.getElementById('taSessionTitle').textContent =
+    `${currentSession.course} · ${currentSession.date}`;
+  renderQR();
+}
+
+function getSignUrl() {
+  const base = window.location.origin + window.location.pathname;
+  return `${base}?sign=1&t=${currentSession.token}&d=${currentSession.date}`;
+}
+
+function renderQR() {
+  const el = document.getElementById('qrcode');
+  el.innerHTML = '';
+  new QRCode(el, { text: getSignUrl(), width: 220, height: 220, correctLevel: QRCode.CorrectLevel.H });
+
+  const pad = 24, size = 220;
+  const svg = document.getElementById('qrRingSvg');
+  svg.style.width = svg.style.height = (size + pad) + 'px';
+  const r  = (size / 2) + (pad / 2) - 3;
+  const cx = (size / 2) + (pad / 2);
+  ['qrRingBg','qrRingProgress'].forEach(id => {
+    const c = document.getElementById(id);
+    c.setAttribute('cx', cx); c.setAttribute('cy', cx); c.setAttribute('r', r);
+  });
+  const circ = 2 * Math.PI * r;
+  const prog = document.getElementById('qrRingProgress');
+  prog.style.strokeDasharray  = circ;
+  prog.style.strokeDashoffset = 0;
+  qrSecsLeft = QR_ROTATION_SECS;
+}
+
+async function rotateToken() {
+  currentSession.token         = generateToken();
+  currentSession.tokenIssuedAt = Date.now();
+  await setDoc(doc(db, 'sessions', currentSession.date), currentSession, { merge: true });
+  renderQR();
+}
+
+function updateQRCountdown() {
+  qrSecsLeft = Math.max(0, qrSecsLeft - 1);
+  document.getElementById('rotCountdown').textContent = qrSecsLeft;
+  const prog = document.getElementById('qrRingProgress');
+  const r    = parseFloat(prog.getAttribute('r') || 110);
+  const circ = 2 * Math.PI * r;
+  prog.style.strokeDashoffset = circ * (1 - qrSecsLeft / QR_ROTATION_SECS);
+}
+
+function startTATimers() {
+  clearAllIntervals();
+  taTimerInt  = setInterval(updateTATimer,     1000);
+  qrCountInt  = setInterval(updateQRCountdown, 1000);
+  qrRotateInt = setInterval(rotateToken, QR_ROTATION_SECS * 1000);
+  updateTATimer();
+  updateQRCountdown();
+}
+
+function updateTATimer() {
+  const diff = new Date(currentSession.close) - new Date();
+  const el   = document.getElementById('taTimerDisplay');
+  if (diff <= 0) {
+    document.getElementById('taTimerText').textContent = 'CLOSED';
+    el.classList.add('expired');
+    clearInterval(taTimerInt);
+    clearInterval(qrRotateInt);
+    clearInterval(qrCountInt);
+  } else {
+    const m = String(Math.floor(diff / 60000)).padStart(2,'0');
+    const s = String(Math.floor((diff % 60000) / 1000)).padStart(2,'0');
+    document.getElementById('taTimerText').textContent = `${m}:${s}`;
+    el.classList.remove('expired');
+  }
+}
+
+// ── FIRESTORE: LIVE ATTENDANCE ───────────────────────
+function subscribeToAttendance(date) {
+  if (unsubscribe) unsubscribe();
+  const colRef = collection(db, 'sessions', date, 'attendance');
+  unsubscribe = onSnapshot(colRef, snap => {
+    const records = snap.docs.map(d => d.data());
+    renderAttendanceTable(records);
+    updateStats(records);
+  });
+}
+
+function renderAttendanceTable(records) {
+  const tbody = document.getElementById('attendanceTbody');
+  tbody.innerHTML = '';
+  records.sort((a,b) => a.time.localeCompare(b.time)).forEach((r, i) => {
+    const onList = !currentSession.classList.length || currentSession.classList.includes(r.studentNum);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${i+1}</td>
+      <td><strong>${esc(r.studentNum)}</strong></td>
+      <td>${esc(r.name)}</td>
+      <td>${r.time}</td>
+      <td><span class="badge ${onList?'badge-success':'badge-warning'}">${onList?'✓ On List':'⚠ Unknown'}</span></td>
+      <td>${r.sig ? `<img class="sig-preview" src="${r.sig}">` : '—'}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function updateStats(records) {
+  const signed = records.length;
+  const total  = currentSession.classList.length;
+  document.getElementById('statSigned').textContent = signed;
+  document.getElementById('statTotal').textContent  = total || '—';
+  document.getElementById('statAbsent').textContent = total ? total - signed : '—';
+
+  if (total) {
+    const signedNums = new Set(records.map(r => r.studentNum));
+    const pending    = currentSession.classList.filter(n => !signedNums.has(n));
+    document.getElementById('pendingList').textContent =
+      pending.length ? pending.join('\n') : '🎉 Everyone signed in!';
+    document.getElementById('pendingCard').classList.remove('hidden');
+  } else {
+    document.getElementById('pendingCard').classList.add('hidden');
+  }
+}
+
+// ── TA: EXPORT CSV ───────────────────────────────────
+window.exportCSV = async function() {
+  const date   = currentSession.date;
+  const colRef = collection(db, 'sessions', date, 'attendance');
+  const snap   = await getDocs(colRef);
+  const records = snap.docs.map(d => d.data()).sort((a,b) => a.time.localeCompare(b.time));
+
+  const signedNums = new Set(records.map(r => r.studentNum));
+  const rows = [['#','Student Number','Full Name','Time Signed','On Class List']];
+  records.forEach((r, i) => {
+    const onList = !currentSession.classList.length || currentSession.classList.includes(r.studentNum);
+    rows.push([i+1, r.studentNum, r.name, r.time, onList ? 'Yes' : 'Unknown']);
+  });
+  if (currentSession.classList.length) {
+    currentSession.classList.filter(n => !signedNums.has(n))
+      .forEach(n => rows.push(['', n, '', 'ABSENT', 'Yes']));
+  }
+
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = `register_${currentSession.course.replace(/\s+/g,'_')}_${date}.csv`;
+  a.click();
+};
+
+// ── STUDENT: LOAD ────────────────────────────────────
+async function loadStudentPage(params) {
+  const token = params.get('t');
+  const date  = params.get('d');
+
+  if (!token || !date) { showStudentExpired('Invalid link.'); return; }
+
+  // Fetch session from Firestore
+  const sessionSnap = await getDoc(doc(db, 'sessions', date));
+  if (!sessionSnap.exists()) { showStudentExpired('No session found for today.'); return; }
+
+  const sess     = sessionSnap.data();
+  const tokenAge = Date.now() - sess.tokenIssuedAt;
+  const valid    = sess.token === token || tokenAge < TOKEN_GRACE_MS;
+
+  if (!valid) {
+    showStudentExpired('This QR code has expired. Please scan the current code shown in class.');
+    return;
+  }
+
+  const now   = new Date();
+  const open  = new Date(sess.open);
+  const close = new Date(sess.close);
+
+  document.getElementById('studentSubtitle').textContent = `${sess.course} · ${sess.date}`;
+
+  if (now < open)  { showStudentExpired(`Signing opens at ${String(OPEN_H).padStart(2,'0')}:${String(OPEN_M).padStart(2,'0')}.`); return; }
+  if (now > close) { showStudentExpired('The attendance window has closed.'); return; }
+
+  // Store session reference for submission
+  window._activeSession = sess;
+
+  clearInterval(studentTimerInt);
+  studentTimerInt = setInterval(() => updateStudentTimer(close), 1000);
+  updateStudentTimer(close);
+
+  const secsUntilNext = QR_ROTATION_SECS - Math.floor((Date.now() - sess.tokenIssuedAt) / 1000);
+  startTokenCountdown(Math.max(1, secsUntilNext));
+}
+
+function updateStudentTimer(close) {
+  const diff = close - new Date();
+  if (diff <= 0) {
+    clearInterval(studentTimerInt);
+    showStudentExpired('The attendance window has closed.');
+    return;
+  }
+  const m = String(Math.floor(diff / 60000)).padStart(2,'0');
+  const s = String(Math.floor((diff % 60000) / 1000)).padStart(2,'0');
+  document.getElementById('studentTimerText').textContent = `${m}:${s}`;
+  document.getElementById('studentTimerBar').classList.toggle('urgent', diff < 120000);
+}
+
+function startTokenCountdown(secsLeft) {
+  clearInterval(tokenCountInt);
+  const circ = 2 * Math.PI * 6;
+  document.getElementById('tokenRingProgress').style.strokeDasharray = circ;
+  let s = secsLeft;
+  function tick() {
+    s = Math.max(0, s - 1);
+    document.getElementById('tokenCountdownText').innerHTML =
+      `This link refreshes in <strong>${s}s</strong> — submit before it changes`;
+    document.getElementById('tokenRingProgress').style.strokeDashoffset = circ * (1 - s / QR_ROTATION_SECS);
+    if (s <= 0) clearInterval(tokenCountInt);
+  }
+  tick();
+  tokenCountInt = setInterval(tick, 1000);
+}
+
+function showStudentExpired(reason) {
+  ['signForm','studentTimerBar','tokenCountdownBar'].forEach(id =>
+    document.getElementById(id).classList.add('hidden'));
+  document.getElementById('expiredMsg').classList.remove('hidden');
+  document.getElementById('expiredReason').textContent = reason || 'Session closed.';
+}
+
+// ── STUDENT: SUBMIT ──────────────────────────────────
+window.submitSignature = async function() {
+  const params = new URLSearchParams(window.location.search);
+  const token  = params.get('t');
+  const date   = params.get('d');
+
+  // Re-fetch session to validate token freshness
+  const sessionSnap = await getDoc(doc(db, 'sessions', date));
+  if (!sessionSnap.exists()) { showStudentExpired('Session not found.'); return; }
+
+  const sess     = sessionSnap.data();
+  const tokenAge = Date.now() - sess.tokenIssuedAt;
+  const valid    = sess.token === token || tokenAge < TOKEN_GRACE_MS;
+
+  if (!valid) { showStudentExpired('QR code expired. Please scan the latest code.'); return; }
+  if (new Date() > new Date(sess.close)) { showStudentExpired('Window has closed.'); return; }
+
+  const num  = document.getElementById('studentNum').value.trim().toUpperCase();
+  const name = document.getElementById('studentName').value.trim();
+
+  if (!num)  { showFormAlert('danger', 'Please enter your student number.'); return; }
+  if (!name) { showFormAlert('danger', 'Please enter your full name.'); return; }
+  if (isCanvasBlank(sigCanvas)) { showFormAlert('danger', 'Please draw your signature.'); return; }
+
+  // Class list check
+  if (sess.classList?.length > 0 && !sess.classList.includes(num)) {
+    showFormAlert('danger', `"${num}" is not on the class list. Check your student number or speak to your TA.`);
+    return;
+  }
+
+  // Duplicate check — query Firestore
+  const attRef  = collection(db, 'sessions', date, 'attendance');
+  const dupSnap = await getDocs(query(attRef, where('studentNum', '==', num)));
+  if (!dupSnap.empty) {
+    showFormAlert('danger', `${num} has already been signed in for this session.`);
+    return;
+  }
+
+  // Disable button to prevent double-submit
+  document.getElementById('submitBtn').disabled = true;
+
+  await addDoc(attRef, {
+    studentNum: num,
+    name,
+    time: new Date().toLocaleTimeString('en-ZA', {hour:'2-digit', minute:'2-digit', second:'2-digit'}),
+    sig:  sigCanvas.toDataURL('image/png'),
+    submittedAt: new Date().toISOString()
+  });
+
+  clearInterval(studentTimerInt);
+  clearInterval(tokenCountInt);
+  ['signForm','studentTimerBar','tokenCountdownBar'].forEach(id =>
+    document.getElementById(id).classList.add('hidden'));
+  document.getElementById('successMsg').classList.remove('hidden');
+};
+
+function showFormAlert(type, msg) {
+  const el = document.getElementById('formAlert');
+  el.className = `alert alert-${type}`;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  setTimeout(() => el.classList.add('hidden'), 6000);
+  document.getElementById('submitBtn').disabled = false;
+}
+
+// ── CANVAS ───────────────────────────────────────────
+function initCanvas() {
+  sigCanvas = document.getElementById('sigCanvas');
+  if (!sigCanvas) return;
+  sigCtx = sigCanvas.getContext('2d');
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  sigCanvas.addEventListener('mousedown',  startDraw);
+  sigCanvas.addEventListener('mousemove',  draw);
+  sigCanvas.addEventListener('mouseup',    endDraw);
+  sigCanvas.addEventListener('mouseleave', endDraw);
+  sigCanvas.addEventListener('touchstart', e => { e.preventDefault(); startDraw(e.touches[0]); }, {passive:false});
+  sigCanvas.addEventListener('touchmove',  e => { e.preventDefault(); draw(e.touches[0]); },      {passive:false});
+  sigCanvas.addEventListener('touchend',   endDraw);
+}
+function resizeCanvas() {
+  if (!sigCanvas) return;
+  sigCanvas.width = sigCanvas.offsetWidth;
+  sigCanvas.height = 140;
+}
+function getPos(e) {
+  const r = sigCanvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (sigCanvas.width / r.width),
+           y: (e.clientY - r.top)  * (sigCanvas.height / r.height) };
+}
+function startDraw(e) {
+  sigPainting = true; sigCtx.beginPath();
+  const p = getPos(e); sigCtx.moveTo(p.x, p.y);
+}
+function draw(e) {
+  if (!sigPainting) return;
+  sigCtx.lineWidth = 2.5; sigCtx.lineCap = 'round'; sigCtx.strokeStyle = '#1a1a2e';
+  const p = getPos(e); sigCtx.lineTo(p.x, p.y); sigCtx.stroke();
+}
+function endDraw()  { sigPainting = false; }
+window.clearSig = function() { if (sigCtx) sigCtx.clearRect(0, 0, sigCanvas.width, sigCanvas.height); };
+function isCanvasBlank(c) {
+  return !c.getContext('2d').getImageData(0,0,c.width,c.height).data.some(v => v !== 0);
+}
+
+// Handle Enter key on login
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('taPassword')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') window.taLogin();
+  });
+  document.getElementById('classListText')?.addEventListener('input', () => {
+    const list = document.getElementById('classListText').value
+      .split(/[\n,;]+/).map(s=>s.trim().toUpperCase()).filter(Boolean);
+    document.getElementById('classListCount').textContent =
+      list.length ? `${list.length} students loaded` : '';
+  });
+});
+
+</script>
+
+<style>
+  :root {
+    --primary: #9D1227;
+    --primary-light: #c3132f;
+    --bg: #f8f9fa;
+    --card: #ffffff;
+    --text: #1a1a2e;
+    --muted: #6c757d;
+    --border: #dee2e6;
+    --success: #198754;
+    --danger: #dc3545;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+  nav {
+    background: var(--primary); color: white; padding: 0 2rem; height: 56px;
+    display: flex; align-items: center; justify-content: space-between;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+  nav .brand { font-weight: 700; font-size: 1.1rem; }
+  .nav-btn {
+    background: rgba(255,255,255,0.2); border: none; color: white;
+    padding: 4px 14px; border-radius: 20px; font-size: .8rem;
+    font-weight: 600; cursor: pointer; transition: background .2s;
+  }
+  .nav-btn:hover { background: rgba(255,255,255,0.35); }
+
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* CLOSED PAGE */
+  #page-closed { display: none; align-items: center; justify-content: center; min-height: calc(100vh - 56px); }
+  #page-closed.active { display: flex; }
+  .closed-card {
+    background: var(--card); border-radius: 20px; padding: 3rem 2.5rem;
+    max-width: 460px; width: 100%; text-align: center;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.1);
+  }
+  .closed-card .lock { font-size: 4rem; margin-bottom: 1rem; }
+  .closed-card h1 { font-size: 1.6rem; margin-bottom: .5rem; }
+  .closed-card p  { color: var(--muted); margin-bottom: .4rem; }
+  .closed-card .next { font-size: .85rem; background: #f0f4ff; border-radius: 8px; padding: .5rem 1rem; margin-top: 1rem; color: #3b5bdb; font-weight: 600; }
+
+  /* LOGIN PAGE */
+  #page-ta-login { display: none; align-items: center; justify-content: center; min-height: calc(100vh - 56px); }
+  #page-ta-login.active { display: flex; }
+  .login-card {
+    background: var(--card); border-radius: 20px; padding: 2.5rem;
+    max-width: 400px; width: 100%; box-shadow: 0 8px 40px rgba(0,0,0,0.1);
+  }
+  .login-card .icon { font-size: 2.5rem; margin-bottom: 1rem; text-align: center; }
+  .login-card h1 { font-size: 1.4rem; text-align: center; margin-bottom: .3rem; }
+  .login-card p  { color: var(--muted); font-size: .9rem; text-align: center; margin-bottom: 1.5rem; }
+
+  /* TA DASHBOARD */
+  .container { max-width: 1000px; margin: 0 auto; padding: 2rem; }
+  .card { background: var(--card); border-radius: 12px; padding: 1.5rem; box-shadow: 0 2px 12px rgba(0,0,0,0.06); margin-bottom: 1.5rem; }
+  .card h2 { font-size: 1.05rem; font-weight: 700; margin-bottom: 1rem; color: var(--primary); }
+
+  .active-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  @media(max-width:700px) { .active-grid { grid-template-columns: 1fr; } }
+
+  .qr-wrapper { display: flex; flex-direction: column; align-items: center; gap: 1rem; padding: 1rem; }
+  .qr-ring-container { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+  .qr-ring-svg { position: absolute; top: -12px; left: -12px; width: calc(100% + 24px); height: calc(100% + 24px); transform: rotate(-90deg); }
+  .qr-ring-bg  { fill: none; stroke: #e9ecef; stroke-width: 6; }
+  .qr-ring-progress { fill: none; stroke: var(--primary); stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset .9s linear; }
+  #qrcode { background: white; padding: 10px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+  .qr-refresh-label { font-size: .8rem; color: var(--muted); background: #f8f9fa; border-radius: 6px; padding: .3rem .8rem; }
+  .qr-refresh-label span { font-weight: 700; color: var(--primary); }
+
+  .timer-display {
+    display: flex; align-items: center; gap: .7rem; background: var(--bg);
+    border-radius: 10px; padding: .7rem 1.2rem; font-size: 1.4rem; font-weight: 700;
+  }
+  .timer-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--success); animation: pulse 1.2s infinite; }
+  .timer-display.expired .timer-dot { background: var(--danger); animation: none; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  .session-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; }
+  .session-header h1 { font-size: 1.4rem; }
+
+  .stats-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 1rem; margin-bottom: 1.5rem; }
+  .stat-card { background: var(--card); border-radius: 10px; padding: 1.1rem; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .stat-card .num { font-size: 2rem; font-weight: 700; color: var(--primary); }
+  .stat-card .label { font-size: .8rem; color: var(--muted); margin-top: .2rem; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th { background: var(--primary); color: white; padding: .75rem 1rem; text-align: left; font-weight: 600; }
+  td { padding: .7rem 1rem; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: #fdf0f2; }
+  .sig-preview { max-height: 40px; border: 1px solid var(--border); border-radius: 4px; }
+  .badge { display: inline-block; padding: .2rem .6rem; border-radius: 20px; font-size: .75rem; font-weight: 600; }
+  .badge-success { background: #d1e7dd; color: #0a3622; }
+  .badge-warning { background: #fff3cd; color: #664d03; }
+
+  /* FORM ELEMENTS */
+  .form-group { margin-bottom: 1rem; }
+  .form-group label { display: block; font-weight: 600; margin-bottom: .4rem; font-size: .9rem; }
+  .form-group input, .form-group textarea {
+    width: 100%; padding: .6rem .9rem; border: 1.5px solid var(--border);
+    border-radius: 8px; font-size: .95rem; transition: border-color .2s; font-family: inherit;
+  }
+  .form-group input:focus, .form-group textarea:focus { outline: none; border-color: var(--primary); }
+
+  .upload-zone {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 1.2rem;
+    text-align: center; cursor: pointer; transition: border-color .2s, background .2s;
+  }
+  .upload-zone:hover { border-color: var(--primary); background: #fdf0f2; }
+  .upload-zone p { color: var(--muted); font-size: .85rem; margin-top: .3rem; }
+
+  /* BUTTONS */
+  .btn {
+    display: inline-flex; align-items: center; gap: .5rem;
+    padding: .65rem 1.4rem; border-radius: 8px; border: none;
+    font-size: .95rem; font-weight: 600; cursor: pointer; transition: all .2s;
+  }
+  .btn-primary { background: var(--primary); color: white; width: 100%; justify-content: center; }
+  .btn-primary:hover { background: var(--primary-light); }
+  .btn-success { background: var(--success); color: white; }
+  .btn-success:hover { background: #157347; }
+  .btn-outline { background: transparent; border: 2px solid var(--primary); color: var(--primary); }
+  .btn-outline:hover { background: var(--primary); color: white; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-lg { padding: .85rem 2rem; font-size: 1.05rem; }
+  .flex-gap { display: flex; gap: .8rem; flex-wrap: wrap; }
+
+  /* STUDENT PAGE */
+  #page-student { display: none; flex-direction: column; align-items: center; min-height: calc(100vh - 56px); padding: 2rem 1rem; }
+  #page-student.active { display: flex; }
+  .sign-card { background: var(--card); border-radius: 16px; padding: 2rem; width: 100%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+  .sign-card h1 { font-size: 1.4rem; margin-bottom: .3rem; }
+  .sign-card .subtitle { color: var(--muted); font-size: .9rem; margin-bottom: 1.2rem; }
+
+  .student-timer {
+    display: flex; align-items: center; gap: .5rem;
+    background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px;
+    padding: .6rem 1rem; margin-bottom: 1.2rem; font-weight: 600; font-size: .9rem;
+  }
+  .student-timer.urgent { background: #f8d7da; border-color: var(--danger); color: var(--danger); }
+
+  .token-countdown {
+    display: flex; align-items: center; gap: .5rem; font-size: .8rem; color: var(--muted);
+    background: #f8f9fa; border-radius: 6px; padding: .4rem .8rem; margin-bottom: 1.2rem;
+  }
+  .mini-ring { width: 18px; height: 18px; flex-shrink: 0; }
+  .token-ring-bg       { fill: none; stroke: #dee2e6; stroke-width: 3; }
+  .token-ring-progress { fill: none; stroke: var(--primary); stroke-width: 3; stroke-linecap: round; transition: stroke-dashoffset .9s linear; }
+
+  canvas#sigCanvas {
+    border: 2px solid var(--border); border-radius: 10px; cursor: crosshair;
+    width: 100%; touch-action: none; background: white;
+  }
+  .sig-controls { display: flex; justify-content: flex-end; margin-top: .4rem; margin-bottom: 1rem; }
+  .sig-hint { font-size: .8rem; color: var(--muted); margin-bottom: .4rem; display: block; }
+
+  .alert { padding: .9rem 1.2rem; border-radius: 8px; margin-bottom: 1rem; font-weight: 500; }
+  .alert-success { background: #d1e7dd; color: #0a3622; }
+  .alert-danger  { background: #f8d7da; color: #58151c; }
+
+  .expired-overlay { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 260px; text-align: center; gap: 1rem; }
+  .expired-overlay .big-icon { font-size: 4rem; }
+
+  .hidden { display: none !important; }
+  .mt-2 { margin-top: 1rem; }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="brand">📋 CS Seminar Register</span>
+  <button class="nav-btn" onclick="window.taLogout && window.taLogout()" id="logoutBtn" style="display:none">Log out</button>
+</nav>
+
+<!-- CLOSED PAGE -->
+<div class="page" id="page-closed">
+  <div class="closed-card">
+    <div class="lock">🔒</div>
+    <h1>Register is Closed</h1>
+    <p>Today is <strong id="closedDay"></strong> · <strong id="closedTime"></strong></p>
+    <p>The attendance register is only open on <strong>Thursdays, 12:45 – 13:00 SAST</strong>.</p>
+    <div class="next" id="nextOpen"></div>
+  </div>
+</div>
+
+<!-- TA LOGIN -->
+<div class="page" id="page-ta-login">
+  <div class="login-card">
+    <div class="icon">🎓</div>
+    <h1>TA Login</h1>
+    <p>Enter your password to manage today's session</p>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" id="taPassword" placeholder="Enter TA password" />
+    </div>
+    <div class="alert alert-danger hidden" id="loginError">Incorrect password. Try again.</div>
+    <button class="btn btn-primary btn-lg mt-2" onclick="window.taLogin()">→ Enter</button>
+  </div>
+</div>
+
+<!-- TA DASHBOARD -->
+<div class="page" id="page-ta">
+  <div class="container">
+
+    <!-- Setup panel -->
+    <div class="card" id="ta-setup-panel">
+      <h2>⚙️ Start Today's Session <span id="setupDate" style="color:var(--muted);font-weight:400"></span></h2>
+      <div class="form-group">
+        <label>Course / Seminar Name</label>
+        <input type="text" id="courseName" value="CSC Honours Seminar" />
+      </div>
+      <div class="form-group">
+        <label>📋 Class List <small style="color:var(--muted)">— one student number per line, or comma separated</small></label>
+        <div class="upload-zone" onclick="document.getElementById('classListFile').click()">
+          <div style="font-size:1.8rem">📁</div>
+          <strong>Upload .txt or .csv</strong>
+          <p>or paste below</p>
+        </div>
+        <input type="file" id="classListFile" accept=".txt,.csv" class="hidden"
+          onchange="const r=new FileReader();r.onload=e=>{document.getElementById('classListText').value=e.target.result;document.getElementById('classListText').dispatchEvent(new Event('input'))};r.readAsText(this.files[0])" />
+        <textarea id="classListText" rows="4" placeholder="STHRAC001&#10;ABCDEF002&#10;XYZABC003"
+          style="margin-top:.6rem;font-family:monospace;font-size:.85rem"></textarea>
+        <p id="classListCount" style="font-size:.8rem;color:var(--muted);margin-top:.3rem"></p>
+      </div>
+      <button class="btn btn-primary btn-lg" onclick="window.startSession()">🚀 Start Session & Generate QR</button>
+    </div>
+
+    <!-- Active session panel -->
+    <div class="hidden" id="ta-active-panel">
+      <div class="session-header">
+        <h1 id="taSessionTitle"></h1>
+        <div class="timer-display" id="taTimerDisplay">
+          <div class="timer-dot"></div>
+          <span id="taTimerText">--:--</span>
+        </div>
+      </div>
+
+      <div class="active-grid">
+        <!-- QR card -->
+        <div class="card">
+          <h2>📱 QR Code — Show to class</h2>
+          <div class="qr-wrapper">
+            <div class="qr-ring-container">
+              <div id="qrcode"></div>
+              <svg class="qr-ring-svg" id="qrRingSvg">
+                <circle class="qr-ring-bg" id="qrRingBg" />
+                <circle class="qr-ring-progress" id="qrRingProgress" />
+              </svg>
+            </div>
+            <div class="qr-refresh-label">🔄 Refreshes in <span id="rotCountdown">--</span>s</div>
+          </div>
+        </div>
+
+        <!-- Stats -->
+        <div>
+          <div class="stats-row">
+            <div class="stat-card"><div class="num" id="statSigned">0</div><div class="label">Signed In</div></div>
+            <div class="stat-card"><div class="num" id="statTotal">—</div><div class="label">On List</div></div>
+            <div class="stat-card"><div class="num" id="statAbsent">—</div><div class="label">Absent</div></div>
+          </div>
+          <div class="card">
+            <h2>📤 Export</h2>
+            <div class="flex-gap">
+              <button class="btn btn-success" onclick="window.exportCSV()">⬇ Download CSV</button>
+              <button class="btn btn-outline" onclick="window.print()">🖨 Print</button>
+            </div>
+          </div>
+          <div class="card hidden" id="pendingCard">
+            <h2>⏳ Not Yet Signed</h2>
+            <div id="pendingList" style="font-size:.85rem;font-family:monospace;color:var(--muted);line-height:1.8;white-space:pre"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Attendance log (live) -->
+      <div class="card">
+        <h2>📋 Live Attendance Log</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Student Number</th><th>Full Name</th><th>Time Signed</th><th>Status</th><th>Signature</th></tr></thead>
+            <tbody id="attendanceTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- STUDENT SIGNING PAGE -->
+<div class="page" id="page-student">
+  <div class="sign-card">
+    <h1>✍️ Sign Register</h1>
+    <p class="subtitle" id="studentSubtitle">Loading…</p>
+
+    <div id="studentTimerBar" class="student-timer">
+      ⏱ Window closes in: <span id="studentTimerText">--:--</span>
+    </div>
+
+    <div class="token-countdown" id="tokenCountdownBar">
+      <svg class="mini-ring" viewBox="0 0 18 18">
+        <circle class="token-ring-bg" cx="9" cy="9" r="6"/>
+        <circle class="token-ring-progress" id="tokenRingProgress" cx="9" cy="9" r="6"/>
+      </svg>
+      <span id="tokenCountdownText">This link refreshes in <strong>--</strong>s</span>
+    </div>
+
+    <div id="expiredMsg" class="hidden">
+      <div class="expired-overlay">
+        <div class="big-icon">🔒</div>
+        <h2>Session Closed</h2>
+        <p style="color:var(--muted)" id="expiredReason"></p>
+      </div>
+    </div>
+
+    <div id="signForm">
+      <div id="formAlert" class="hidden"></div>
+      <div class="form-group">
+        <label>Student Number</label>
+        <input type="text" id="studentNum" placeholder="e.g. STHRAC001" maxlength="20" />
+      </div>
+      <div class="form-group">
+        <label>Full Name</label>
+        <input type="text" id="studentName" placeholder="e.g. Racquel Sthrace" maxlength="60" />
+      </div>
+      <div class="form-group">
+        <label>Signature <span class="sig-hint">Draw in the box below</span></label>
+        <canvas id="sigCanvas" height="140"></canvas>
+        <div class="sig-controls">
+          <button class="btn btn-outline" onclick="window.clearSig()" style="padding:.4rem .9rem;font-size:.85rem">✕ Clear</button>
+        </div>
+      </div>
+      <button class="btn btn-primary btn-lg" onclick="window.submitSignature()" id="submitBtn">✅ Submit Attendance</button>
+    </div>
+
+    <div id="successMsg" class="hidden">
+      <div class="expired-overlay">
+        <div class="big-icon">✅</div>
+        <h2>You're signed in!</h2>
+        <p style="color:var(--muted)">Your attendance has been recorded.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
+```
+
+
+
