@@ -24,10 +24,7 @@ const firebaseConfig = {
   appId: "1:438930123751:web:d7a98ff74db953c3b1ab42",
   measurementId: "G-QLQRYLZEV7"
 };
-// ╔══════════════════════════════════════════════════╗
-// ║  TA PASSWORD — change this to whatever you want  ║
-// ╚══════════════════════════════════════════════════╝
-const TA_PASSWORD = "seminar2026";
+// TA password is stored in Firestore at config/ta { password: "..." }
 
 // ╔══════════════════════════════════════════════════╗
 // ║  SEMINAR SCHEDULE (24h, Africa/Johannesburg)     ║
@@ -147,13 +144,21 @@ function msUntilNextThursday() {
 }
 
 // ── TA LOGIN ─────────────────────────────────────────
-window.taLogin = function() {
+window.taLogin = async function() {
   const pw = document.getElementById('taPassword').value;
-  if (pw === TA_PASSWORD) {
-    document.getElementById('loginError').classList.add('hidden');
-    showPage('page-ta');
-    initTADashboard();
-  } else {
+  try {
+    const configSnap = await getDoc(doc(db, 'config', 'ta'));
+    const storedPassword = configSnap.exists() ? configSnap.data().password : null;
+    if (storedPassword && pw === storedPassword) {
+      document.getElementById('loginError').classList.add('hidden');
+      showPage('page-ta');
+      initTADashboard();
+    } else {
+      document.getElementById('loginError').classList.remove('hidden');
+      document.getElementById('taPassword').value = '';
+    }
+  } catch (e) {
+    console.error('Login check failed:', e);
     document.getElementById('loginError').classList.remove('hidden');
     document.getElementById('taPassword').value = '';
   }
