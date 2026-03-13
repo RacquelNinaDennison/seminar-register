@@ -30,7 +30,7 @@ const firebaseConfig = {
 // ║  SEMINAR SCHEDULE (24h, Africa/Johannesburg)     ║
 // ╚══════════════════════════════════════════════════╝
 const OPEN_H  = 12, OPEN_M  = 45;
-const CLOSE_H = 15, CLOSE_M =  0;
+const CLOSE_H = 18, CLOSE_M =  0;
 const QR_ROTATION_SECS = 60;
 
 // ────────────────────────────────────────────────────
@@ -245,9 +245,9 @@ function getSignUrl() {
 function renderQR() {
   const el = document.getElementById('qrcode');
   el.innerHTML = '';
-  new QRCode(el, { text: getSignUrl(), width: 220, height: 220, correctLevel: QRCode.CorrectLevel.H });
+  new QRCode(el, { text: getSignUrl(), width: 400, height: 900, correctLevel: QRCode.CorrectLevel.H });
 
-  const pad = 24, size = 220;
+  const pad = 24, size = 400;
   const svg = document.getElementById('qrRingSvg');
   svg.style.width = svg.style.height = (size + pad) + 'px';
   const r  = (size / 2) + (pad / 2) - 3;
