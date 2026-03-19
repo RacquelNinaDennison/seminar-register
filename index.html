@@ -99,10 +99,8 @@ window.addEventListener('DOMContentLoaded', () => {
     showPage('page-student');
     loadStudentPage(params);
   } else {
-    // Determine what to show
-    if (isSeminarWindow()) {
-      showPage('page-ta-login');
-    } 
+     showPage('page-ta-login');
+
     // Poll every 30s in case window opens while page is loaded
     setInterval(() => {
       const activePage = document.querySelector('.page.active')?.id;
