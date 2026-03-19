@@ -365,14 +365,7 @@ async function loadStudentPage(params) {
     return;
   }
 
-  const now   = new Date();
-  const open  = new Date(sess.open);
-  const close = new Date(sess.close);
-
   document.getElementById('studentSubtitle').textContent = `${sess.course} · ${sess.date}`;
-
-  if (now < open)  { showStudentExpired(`Signing opens at ${String(OPEN_H).padStart(2,'0')}:${String(OPEN_M).padStart(2,'0')}.`); return; }
-  if (now > close) { showStudentExpired('The attendance window has closed.'); return; }
 
   // Store session reference for submission
   window._activeSession = sess;
@@ -436,7 +429,6 @@ window.submitSignature = async function() {
   const valid    = sess.token === token || tokenAge < TOKEN_GRACE_MS;
 
   if (!valid) { showStudentExpired('QR code expired. Please scan the latest code.'); return; }
-  if (new Date() > new Date(sess.close)) { showStudentExpired('Window has closed.'); return; }
 
   const num  = document.getElementById('studentNum').value.trim().toUpperCase();
   const name = document.getElementById('studentName').value.trim();
