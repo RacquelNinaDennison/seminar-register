@@ -388,7 +388,7 @@ function updateStudentTimer(close) {
   const m = String(Math.floor(diff / 60000)).padStart(2,'0');
   const s = String(Math.floor((diff % 60000) / 1000)).padStart(2,'0');
   document.getElementById('studentTimerText').textContent = `${m}:${s}`;
-  document.getElementById('studentTimerBar').classList.toggle('urgent', diff < 120000);
+  document.getElementById('studentTimerBar')?.classList.toggle('urgent', diff < 120000);
 }
 
 function startTokenCountdown(secsLeft) {
@@ -408,8 +408,8 @@ function startTokenCountdown(secsLeft) {
 }
 
 function showStudentExpired(reason) {
-  ['signForm','studentTimerBar','tokenCountdownBar'].forEach(id =>
-    document.getElementById(id).classList.add('hidden'));
+  ['signForm','tokenCountdownBar'].forEach(id =>
+    document.getElementById(id)?.classList.add('hidden'));
   document.getElementById('expiredMsg').classList.remove('hidden');
   document.getElementById('expiredReason').textContent = reason || 'Session closed.';
 }
@@ -464,8 +464,8 @@ window.submitSignature = async function() {
 
   clearInterval(studentTimerInt);
   clearInterval(tokenCountInt);
-  ['signForm','studentTimerBar','tokenCountdownBar'].forEach(id =>
-    document.getElementById(id).classList.add('hidden'));
+  ['signForm','tokenCountdownBar'].forEach(id =>
+    document.getElementById(id)?.classList.add('hidden'));
   document.getElementById('successMsg').classList.remove('hidden');
 };
 
