@@ -328,14 +328,14 @@ window.exportCSV = async function() {
   const records = snap.docs.map(d => d.data()).sort((a,b) => a.time.localeCompare(b.time));
 
   const signedNums = new Set(records.map(r => r.studentNum));
-  const rows = [['#','Student Number','Full Name','Date','Time Signed','On Class List']];
+  const rows = [['#','Student Number','Full Name','Time Signed','On Class List']];
   records.forEach((r, i) => {
     const onList = !currentSession.classList.length || currentSession.classList.includes(r.studentNum);
-    rows.push([i+1, r.studentNum, r.name, currentSession.date, r.time, onList ? 'Yes' : 'Unknown']);
+    rows.push([i+1, r.studentNum, r.name, r.time, onList ? 'Yes' : 'Unknown']);
   });
   if (currentSession.classList.length) {
     currentSession.classList.filter(n => !signedNums.has(n))
-      .forEach(n => rows.push(['', n, '', currentSession.date, 'ABSENT', 'Yes']));
+      .forEach(n => rows.push(['', n, '', 'ABSENT', 'Yes']));
   }
 
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
@@ -855,7 +855,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <input type="text" id="studentName" placeholder="e.g. Racquel Sthrace" maxlength="60" />
       </div>
       <div class="form-group">
-        <label>Signature <span class="sig-hint">Draw in the box below. if it doesnt work, just move the screen up and down and try again</span></label>
+        <label>Signature <span class="sig-hint">Draw in the box below. if it doesnt work, just move the screen up and down and try again/span></label>
         <canvas id="sigCanvas" height="140"></canvas>
         <div class="sig-controls">
           <button class="btn btn-outline" onclick="window.clearSig()" style="padding:.4rem .9rem;font-size:.85rem">✕ Clear</button>
