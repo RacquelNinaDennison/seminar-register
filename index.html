@@ -367,6 +367,16 @@ async function loadStudentPage(params) {
 
   document.getElementById('studentSubtitle').textContent = `${sess.course} · ${sess.date}`;
 
+  // Check if within Thursday 12:00–13:00 SAST
+  const now = nowSAST();
+  const day = now.getDay();
+  const h = now.getHours(), m = now.getMinutes();
+  const inWindow = day === 4 && (h === 12 || (h === 13 && m === 0));
+  if (!inWindow) {
+    showStudentExpired('The register is only open on Thursdays, 12:00 – 13:00 SAST.');
+    return;
+  }
+
   // Store session reference for submission
   window._activeSession = sess;
 
@@ -435,7 +445,6 @@ window.submitSignature = async function() {
 
   if (!num)  { showFormAlert('danger', 'Please enter your student number.'); return; }
   if (!name) { showFormAlert('danger', 'Please enter your full name.'); return; }
-  if (isCanvasBlank(sigCanvas)) { showFormAlert('danger', 'Please draw your signature.'); return; }
 
   // Class list check
   if (sess.classList?.length > 0 && !sess.classList.includes(num)) {
@@ -458,7 +467,6 @@ window.submitSignature = async function() {
     studentNum: num,
     name,
     time: new Date().toLocaleTimeString('en-ZA', {hour:'2-digit', minute:'2-digit', second:'2-digit'}),
-    sig:  sigCanvas.toDataURL('image/png'),
     submittedAt: new Date().toISOString()
   });
 
@@ -853,13 +861,6 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="form-group">
         <label>Full Name</label>
         <input type="text" id="studentName" placeholder="e.g. Racquel Sthrace" maxlength="60" />
-      </div>
-      <div class="form-group">
-        <label>Signature <span class="sig-hint">Draw in the box below. if it doesnt work, just move the screen up and down and try again/span></label>
-        <canvas id="sigCanvas" height="140"></canvas>
-        <div class="sig-controls">
-          <button class="btn btn-outline" onclick="window.clearSig()" style="padding:.4rem .9rem;font-size:.85rem">✕ Clear</button>
-        </div>
       </div>
       <button class="btn btn-primary btn-lg" onclick="window.submitSignature()" id="submitBtn">✅ Submit Attendance</button>
     </div>
