@@ -102,9 +102,7 @@ window.addEventListener('DOMContentLoaded', () => {
     // Determine what to show
     if (isSeminarWindow()) {
       showPage('page-ta-login');
-    } else {
-      showClosedPage();
-    }
+    } 
     // Poll every 30s in case window opens while page is loaded
     setInterval(() => {
       const activePage = document.querySelector('.page.active')?.id;
@@ -115,33 +113,6 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// ── CLOSED PAGE ──────────────────────────────────────
-function showClosedPage() {
-  const now  = nowSAST();
-  const day  = now.getDay();
-  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  document.getElementById('closedDay').textContent  = days[day];
-  document.getElementById('closedTime').textContent = now.toLocaleTimeString('en-ZA', {hour:'2-digit',minute:'2-digit'});
-
-  // Countdown to next Thursday 12:45
-  const msUntil = msUntilNextThursday();
-  if (msUntil !== null) {
-    const h = Math.floor(msUntil / 3600000);
-    const m = Math.floor((msUntil % 3600000) / 60000);
-    document.getElementById('nextOpen').textContent = `Opens in ${h}h ${m}m (next Thursday 12:45)`;
-  }
-  showPage('page-closed');
-}
-
-function msUntilNextThursday() {
-  const now  = nowSAST();
-  const day  = now.getDay();
-  const daysUntilThur = (4 - day + 7) % 7 || 7;
-  const next = new Date(now);
-  next.setDate(now.getDate() + daysUntilThur);
-  next.setHours(OPEN_H, OPEN_M, 0, 0);
-  return next - now;
-}
 
 // ── TA LOGIN ─────────────────────────────────────────
 window.taLogin = async function() {
