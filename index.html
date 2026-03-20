@@ -11,6 +11,8 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, addDoc, getDocs, query, where }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, signOut }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 // ╔══════════════════════════════════════════════════╗
 // ║  PASTE YOUR FIREBASE CONFIG HERE                 ║
@@ -24,7 +26,7 @@ const firebaseConfig = {
   appId: "1:438930123751:web:d7a98ff74db953c3b1ab42",
   measurementId: "G-QLQRYLZEV7"
 };
-// TA password is stored in Firestore at config/ta { password: "..." }
+// TA login via Firebase Auth (email/password)
 
 // ╔══════════════════════════════════════════════════╗
 // ║  SEMINAR SCHEDULE (24h, Africa/Johannesburg)     ║
@@ -34,8 +36,9 @@ const CLOSE_H = 15, CLOSE_M =  0;
 const QR_ROTATION_SECS = 60;
 
 // ────────────────────────────────────────────────────
-const app = initializeApp(firebaseConfig);
-const db  = getFirestore(app);
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
 
 // ── STATE ────────────────────────────────────────────
 let currentSession   = null;   // { id, token, tokenIssuedAt, date, open, close }
@@ -114,18 +117,13 @@ window.addEventListener('DOMContentLoaded', () => {
 
 // ── TA LOGIN ─────────────────────────────────────────
 window.taLogin = async function() {
-  const pw = document.getElementById('taPassword').value;
+  const email = document.getElementById('taEmail').value.trim();
+  const pw    = document.getElementById('taPassword').value;
   try {
-    const configSnap = await getDoc(doc(db, 'config', 'ta'));
-    const storedPassword = configSnap.exists() ? configSnap.data().password : null;
-    if (storedPassword && pw === storedPassword) {
-      document.getElementById('loginError').classList.add('hidden');
-      showPage('page-ta');
-      initTADashboard();
-    } else {
-      document.getElementById('loginError').classList.remove('hidden');
-      document.getElementById('taPassword').value = '';
-    }
+    await signInWithEmailAndPassword(auth, email, pw);
+    document.getElementById('loginError').classList.add('hidden');
+    showPage('page-ta');
+    initTADashboard();
   } catch (e) {
     console.error('Login check failed:', e);
     document.getElementById('loginError').classList.remove('hidden');
@@ -133,9 +131,10 @@ window.taLogin = async function() {
   }
 };
 
-window.taLogout = function() {
+window.taLogout = async function() {
   clearAllIntervals();
   currentSession = null;
+  await signOut(auth);
   document.getElementById('ta-active-panel').classList.add('hidden');
   document.getElementById('ta-setup-panel').classList.remove('hidden');
   showPage('page-ta-login');
@@ -528,6 +527,9 @@ function isCanvasBlank(c) {
 
 // Handle Enter key on login
 document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('taEmail')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') window.taLogin();
+  });
   document.getElementById('taPassword')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') window.taLogin();
   });
@@ -734,10 +736,14 @@ document.addEventListener('DOMContentLoaded', () => {
   <div class="login-card">
     <div class="icon">🎓</div>
     <h1>TA Login</h1>
-    <p>Enter your password to manage today's session</p>
+    <p>Sign in to manage today's session</p>
+    <div class="form-group">
+      <label>Email</label>
+      <input type="email" id="taEmail" placeholder="ta@example.com" />
+    </div>
     <div class="form-group">
       <label>Password</label>
-      <input type="password" id="taPassword" placeholder="Enter TA password" />
+      <input type="password" id="taPassword" placeholder="Enter password" />
     </div>
     <div class="alert alert-danger hidden" id="loginError">Incorrect password. Try again.</div>
     <button class="btn btn-primary btn-lg mt-2" onclick="window.taLogin()">→ Enter</button>
